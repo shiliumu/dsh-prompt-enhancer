@@ -262,7 +262,126 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const lastCall = fetchCalls[fetchCalls.length - 1];
 assert.equal(lastCall.body.model, 'gpt-5.6-terra', '选中的模型应被使用');
 
+/* ---------------- 场景 4：结构化候选（待定点 + 方向选项 + 缩进树） ---------------- */
+unmountAll();
+keydownListeners.length = 0;
+fetchResponse = {
+  ok: true,
+  status: 200,
+  json: async () => ({
+    structured: true,
+    candidates: [
+      {
+        text: '排查爬虫中断：连续运行 <待确认：时长> 分钟不再中断。',
+        gaps: [
+          {
+            question: '这次要动代码吗？',
+            options: [
+              { label: '只诊断', fill: '只做根因定位，暂不修改任何代码', effect: '最快、零风险；可能多来一轮', placeholder: '' },
+              { label: '诊断+修复', fill: '定位根因后直接给出并应用修复', effect: '一次到位；判断错会白改一轮', placeholder: '' },
+            ],
+          },
+          {
+            question: '跑多久算稳？',
+            options: [
+              { label: '30 分钟', fill: '30', effect: '只能抓到高频断连', placeholder: '<待确认：时长>' },
+              { label: '2 小时', fill: '2 小时', effect: '能看出间歇性中断', placeholder: '<待确认：时长>' },
+            ],
+          },
+        ],
+      },
+      { text: '第二条候选', gaps: [] },
+      { text: '第三条候选', gaps: [] },
+    ],
+  }),
+};
+
+const gapPlugin = loaded.factory((name) => (name === 'react' ? ReactStub : null));
+const gapRegistrations = [];
+gapPlugin.apply({
+  ...ctx,
+  remote: {
+    session: {
+      modelCatalog: async () => ({
+        ok: true,
+        value: {
+          default: { provider: 'custom:tr', model: 'deepseek-v4-flash' },
+          groups: [{ id: 'custom:tr', name: 'TokenRhythm', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }],
+        },
+      }),
+    },
+  },
+  slots: {
+    inject: (name, callback) => {
+      gapRegistrations.push({ name, entry: callback() });
+      return () => {};
+    },
+    register: (options, Component) => ({ options, Component }),
+  },
+});
+const gapButton = gapRegistrations[0].entry.Component;
+const gapPanel = gapRegistrations[1].entry.Component;
+draft = '爬虫老是断';
+await gapButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's3' }).props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+let gapTree = gapPanel({ input: { draft } });
+const gapJson = JSON.stringify(gapTree);
+assert.ok(gapJson.includes('待定 2 处'), `候选卡应显示待定标记，实际：${gapJson.slice(0, 300)}`);
+assert.ok(gapJson.includes('这次要动代码吗？') && gapJson.includes('跑多久算稳？'), '两个待定点都应渲染');
+assert.ok(gapJson.includes('需要你拍板 2 处'), '拍板区表头应显示');
+assert.ok(findByClass(gapTree, 'dshpe_tree') === null, '方向图默认收起');
+assert.ok(findByClass(gapTree, 'dshpe_toggle') !== null, '应有「看方向图」入口');
+
+// 点第一个待定点的第 2 个方向
+const chips = [];
+const collectChips = (node) => {
+  if (node === null || typeof node !== 'object') return;
+  if (typeof node.props?.className === 'string' && node.props.className.split(' ').includes('dshpe_chip')) chips.push(node);
+  for (const child of node.children ?? []) collectChips(child);
+};
+collectChips(gapTree);
+assert.equal(chips.length, 4, `两个待定点各 2 个选项，应渲染 4 个 chip，实际 ${chips.length}`);
+await chips[1].props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+gapTree = gapPanel({ input: { draft } });
+assert.ok(JSON.stringify(gapTree).includes('已定 1/2'), '拍板后计数应更新');
+
+// 展开方向图：应出现缩进树且高亮当前选择
+await findByClass(gapTree, 'dshpe_toggle').props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+gapTree = gapPanel({ input: { draft } });
+const treeNode = findByClass(gapTree, 'dshpe_tree');
+assert.ok(treeNode !== null, '点「看方向图」后应展开缩进树');
+const treeText = JSON.stringify(treeNode);
+assert.ok(treeText.includes('├─') && treeText.includes('└─'), '缩进树应有分支字符');
+assert.ok(treeText.includes('一次到位；判断错会白改一轮'), '缩进树应含选项效果');
+
+// Tab 进入拍板区，数字键 2 选第 2 个方向（用占位符替换路径），Enter 回到候选
+keydownListeners.length = 0;
+gapTree = gapPanel({ input: { draft } });
+const fire = (key) => {
+  for (const listener of [...keydownListeners]) listener({ key, preventDefault: () => {}, stopPropagation: () => {} });
+};
+fire('Tab');
+await new Promise((resolve) => setTimeout(resolve, 0));
+gapTree = gapPanel({ input: { draft } });
+assert.ok(JSON.stringify(gapTree).includes('"data-focus":"true"'), 'Tab 后拍板区应获得焦点');
+
+fire('ArrowDown'); // 切到第 2 个待定点
+await new Promise((resolve) => setTimeout(resolve, 0));
+fire('2'); // 选「2 小时」
+await new Promise((resolve) => setTimeout(resolve, 0));
+fire('Enter'); // 回到候选
+await new Promise((resolve) => setTimeout(resolve, 0));
+fire('1'); // 采纳第 1 条候选
+const adopted = draftWrites[draftWrites.length - 1];
+assert.ok(adopted.includes('连续运行 2 小时 分钟不再中断'), `占位符应被原地替换，实际：${adopted}`);
+assert.ok(adopted.includes('【补充要求】'), '无占位符的方向应追加为补充要求');
+assert.ok(adopted.includes('定位根因后直接给出并应用修复'), '补充要求应含所选方向');
+
 console.log('smoke ok');
 console.log('  插槽注册      :', registrations.map((item) => item.name).join(', '));
 console.log('  请求次数      :', fetchCalls.length);
 console.log('  采纳写入      :', JSON.stringify(draftWrites));
+console.log('  结构化候选    : gaps 渲染 / 方向图缩进树 / 占位符替换 + 补充要求');
