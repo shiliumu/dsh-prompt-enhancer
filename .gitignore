@@ -1,0 +1,11 @@
+# 依赖链接（install.ps1 会按需重建 junction）
+node_modules/
+
+# 安装/卸载脚本产生的备份
+*.bak-prompt-enhancer
+*.bak-prompt-enhancer-uninstall
+cordis.patch.yml.profile-backup
+
+# 验证产物
+verify-ui*.png
+*.log

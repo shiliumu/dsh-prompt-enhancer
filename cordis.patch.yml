@@ -1,0 +1,4 @@
+# 提示词增强器：Host 路由 + 客户端输入框控件
+- insert:
+    - id: prompt-enhancer
+      name: '@linxin666/dsh-prompt-enhancer'
