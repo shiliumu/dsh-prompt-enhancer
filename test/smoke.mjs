@@ -262,6 +262,66 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const lastCall = fetchCalls[fetchCalls.length - 1];
 assert.equal(lastCall.body.model, 'gpt-5.6-terra', '选中的模型应被使用');
 
+/* ---------------- 场景 3.5：请求失败（只出思维链）-> 自动给换模型选择框 ---------------- */
+unmountAll();
+keydownListeners.length = 0;
+fetchResponse = {
+  ok: false,
+  status: 500,
+  json: async () => ({
+    error: '模型只产出了思维链（218 字符）没有正文，结束原因 max-tokens。',
+    code: 'reasoning-only',
+    detail: { outputChars: 0, reasoningChars: 218, finish: 'max-tokens' },
+  }),
+};
+ctx.remote.session.modelCatalog = async () => ({
+  ok: true,
+  value: {
+    default: { provider: 'custom:tr', model: 'glm-5.3-flash' },
+    groups: [
+      {
+        id: 'custom:tr',
+        name: 'TokenRhythm',
+        models: [
+          { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' },
+          { id: 'deepseek-flash', name: 'DeepSeek Flash' },
+        ],
+      },
+    ],
+  },
+});
+const failPlugin = loaded.factory((name) => (name === 'react' ? ReactStub : null));
+const failRegistrations = [];
+failPlugin.apply({
+  ...ctx,
+  slots: {
+    inject: (name, callback) => {
+      failRegistrations.push({ name, entry: callback() });
+      return () => {};
+    },
+    register: (options, Component) => ({ options, Component }),
+  },
+});
+const failButton = failRegistrations[0].entry.Component;
+const failPanel = failRegistrations[1].entry.Component;
+draft = '帮我看看这个爬虫为啥老是断';
+const callsBeforeFail = fetchCalls.length;
+await failButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's3' }).props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(fetchCalls.length, callsBeforeFail + 1, '失败场景也应发一次请求');
+const failTree = JSON.stringify(failPanel({ input: { draft } }));
+assert.ok(failTree.includes('模型只产出了思维链'), `选择框应保留失败原因，实际：${failTree.slice(0, 300)}`);
+assert.ok(failTree.includes('DeepSeek Flash'), `失败后应直接列出可换的模型，实际：${failTree.slice(0, 300)}`);
+assert.ok(failTree.includes('易空正文'), '应标注实测易空正文的模型');
+// 换模型重试时必须沿用失败时的那份草稿（模拟输入框已被清空）
+draft = '';
+const failPick = { key: '2', preventDefault: () => {}, stopPropagation: () => {} };
+for (const listener of [...keydownListeners]) listener(failPick);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const retryCall = fetchCalls[fetchCalls.length - 1];
+assert.equal(retryCall.body.model, 'deepseek-flash', '应使用新选的模型重试');
+assert.equal(retryCall.body.text, '帮我看看这个爬虫为啥老是断', '换模型重试应沿用失败时提交的草稿');
+
 /* ---------------- 场景 4：结构化候选（待定点 + 方向选项 + 缩进树） ---------------- */
 unmountAll();
 keydownListeners.length = 0;
