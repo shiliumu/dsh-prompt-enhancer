@@ -20,17 +20,23 @@ const bad = (label, detail) => {
 // --- package.json ----------------------------------------------------------
 const manifestPath = join(profileDir, 'package.json');
 const raw = readFileSync(manifestPath);
+let manifest = null;
+let promptDependency = undefined;
+let promptBundle = false;
 if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) bad('package.json has no BOM', 'found UTF-8 BOM (JSON.parse would throw)');
 else ok('package.json has no BOM');
 try {
-  const manifest = JSON.parse(raw.toString('utf8'));
+  manifest = JSON.parse(raw.toString('utf8'));
   const deps = Object.keys(manifest.dependencies ?? {});
+  promptDependency = manifest.dependencies?.['@linxin666/dsh-prompt-enhancer'];
+  promptBundle = Array.isArray(manifest.dsh?.profile?.bundles)
+    && manifest.dsh.profile.bundles.includes('@linxin666/dsh-prompt-enhancer');
   ok('package.json parses', `${deps.length} dependencies`);
-  const ours = manifest.dependencies?.['@linxin666/dsh-prompt-enhancer'];
-  if (ours === undefined) bad('prompt-enhancer dependency present', 'missing');
-  else ok('prompt-enhancer dependency present', ours);
+  if (promptDependency === undefined) bad('prompt-enhancer dependency present', 'missing');
+  else ok('prompt-enhancer dependency present', promptDependency);
   if (!Array.isArray(manifest.dsh?.profile?.bundles)) bad('dsh.profile.bundles intact', 'not an array');
   else ok('dsh.profile.bundles intact', `${manifest.dsh.profile.bundles.length} bundles`);
+  if (promptBundle) ok('prompt-enhancer bundle registered', 'official profile manager');
 } catch (error) {
   bad('package.json parses', error.message);
 }
@@ -64,7 +70,9 @@ if (yaml === null) {
       ok('cordis.patch.yml parses to an array', `${parsed.length} entries`);
       const hit = JSON.stringify(parsed).includes('prompt-enhancer');
       if (hit) ok('patch contains the prompt-enhancer insert');
-      else bad('patch contains the prompt-enhancer insert', 'not found in parsed tree');
+      else if (promptDependency !== undefined && promptBundle) {
+        ok('prompt-enhancer registered by the profile bundle', 'no user patch entry needed');
+      } else bad('prompt-enhancer registration', 'neither patch insert nor official bundle registration found');
     }
   } catch (error) {
     bad('cordis.patch.yml parses', error.message.split('\n')[0]);

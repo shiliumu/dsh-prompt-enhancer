@@ -7,7 +7,16 @@
  * 用法: node test/host-parse.mjs
  */
 import assert from 'node:assert/strict';
-import { parseDsl, parseStructured, splitCandidates } from '../lib/index.js';
+import { buildUserMessage, parseDsl, parseStructured, splitCandidates } from '../lib/index.js';
+
+/* ---------- 官方 LLM 消息契约 ---------- */
+{
+  const message = buildUserMessage('草稿文本');
+  assert.match(message.id, /^[0-9a-f-]{36}$/i, '消息必须有稳定 UUID 身份');
+  assert.equal(message.role, 'user');
+  assert.deepEqual(message.content, [{ type: 'text', text: '草稿文本' }]);
+  assert.deepEqual(message.source, { kind: 'user' });
+}
 
 /* ---------- DSL 主路径 ---------- */
 {
@@ -126,6 +135,33 @@ import { parseDsl, parseStructured, splitCandidates } from '../lib/index.js';
 /* ---------- DSL：没有【候选】标记时不误判 ---------- */
 {
   assert.deepEqual(parseDsl('就是一段普通文字\n没有标记', 3), [], '没有标记应返回空数组');
+}
+
+/* ---------- DSL：待定点插在正文中间，后半段正文不得被吞 ---------- */
+{
+  const raw = [
+    '【候选】',
+    '第一段正文。',
+    '【待定】要哪一版？',
+    '- 简版 || 只给结论 || 快 ||',
+    '- 详版 || 给结论和依据 || 慢但全 ||',
+    '第二段正文，必须保住。',
+    '- 这条是正文里的列表项，不是选项',
+    '【待定】',
+    '- 没有问句的选项行应该被丢掉',
+    '第三段正文。',
+  ].join('\n');
+  const parsed = parseStructured(raw, 3);
+  assert.equal(parsed.structured, true);
+  assert.equal(parsed.candidates.length, 1);
+  assert.equal(
+    parsed.candidates[0].text,
+    '第一段正文。\n第二段正文，必须保住。\n- 这条是正文里的列表项，不是选项\n第三段正文。',
+    '【待定】之后的正文（含列表项）必须原样保留',
+  );
+  assert.equal(parsed.candidates[0].gaps.length, 1, '空问句的【待定】及其选项应被丢弃');
+  assert.equal(parsed.candidates[0].gaps[0].question, '要哪一版？');
+  assert.equal(parsed.candidates[0].gaps[0].options.length, 2);
 }
 
 console.log('host-parse ok');

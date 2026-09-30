@@ -7,7 +7,7 @@
       2. append the plugin registration block to the profile's cordis.patch.yml;
       3. register the package in the profile's package.json dependencies
          (the Desktop plugin graph is derived from package.json dependencies);
-      4. self-check that the host module imports and resolves @deepseek-ai/dsh-llm.
+      4. self-check that the host module imports successfully under the active DSH runtime.
 
     NOTE: this file is intentionally ASCII-only. Windows PowerShell 5.1 reads
     BOM-less files as ANSI, which corrupts non-ASCII text.
@@ -59,17 +59,6 @@ if (Test-Path -LiteralPath $target) {
 } else {
     New-Item -ItemType Junction -Path $target -Target $source | Out-Null
     Write-Host "[1/4] junction created: $target -> $source" -ForegroundColor Green
-}
-
-# Host 侧 import 了 @deepseek-ai/dsh-llm，插件自己的 node_modules 里要有它的 junction
-# （clone 出来的仓库不带 node_modules，这一步保证可复现）。
-$llmLink = Join-Path $source 'node_modules\@deepseek-ai\dsh-llm'
-if (-not (Test-Path -LiteralPath $llmLink)) {
-    $llmTarget = Join-Path $ProfilePath 'node_modules\@deepseek-ai\dsh-llm'
-    if (-not (Test-Path -LiteralPath $llmTarget)) { throw "@deepseek-ai/dsh-llm not found under $ProfilePath\node_modules" }
-    New-Item -ItemType Directory -Force -Path (Split-Path $llmLink) | Out-Null
-    New-Item -ItemType Junction -Path $llmLink -Target $llmTarget | Out-Null
-    Write-Host "[1/4] linked @deepseek-ai/dsh-llm for the host module" -ForegroundColor Green
 }
 
 # --- 2/4 cordis.patch.yml ----------------------------------------------------
@@ -147,7 +136,7 @@ console.log('ok:' + mod.name);
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[4/4] host self-check FAILED:" -ForegroundColor Red
         Write-Host ($check -join "`n")
-        Write-Host "hint: make sure $source\node_modules\@deepseek-ai\dsh-llm junction exists." -ForegroundColor Yellow
+        Write-Host "hint: run the self-check with the same DSH runtime used by the target profile." -ForegroundColor Yellow
     } else {
         Write-Host "[4/4] host self-check ok ($check)" -ForegroundColor Green
     }

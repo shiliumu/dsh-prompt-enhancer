@@ -1,6 +1,6 @@
 {
   "name": "@linxin666/dsh-prompt-enhancer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH Web UI 提示词增强器：输入框工具行 ✨ 按钮一键生成清晰提示词；候选框支持方向键/数字键、生成后切换模型，并把「该由你拍板」的点做成方向选项框 + 效果方向缩进树；Host 侧用本地已配置的 flash 模型改写。",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "engines": {
+      "dsh": ">=0.2.0-rc.1"
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
