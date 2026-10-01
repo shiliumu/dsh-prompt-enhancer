@@ -573,6 +573,25 @@ assert.ok(adopted.includes('定位根因后直接给出并应用修复'), '补�
   assert.ok(advTree.includes('策略：All in 做产品'), '选中后应展开方向详情');
   assert.ok(advTree.includes('前提：存款够 12 个月') && advTree.includes('风险：产品无人用'));
 
+  // 场景 9.5：未选方向时点「导出」→ 给引导而不是静默（真实用户踩的坑）
+  {
+    // 取消选中（当前选中的是第一个方向，再点一次 = 取消）
+    findByClass(advDock({ input: { draft } }), 'dshadv_dir').props.onClick();
+    const beforeExport = fetchCalls.length;
+    const exportBtn2 = findByClass(advDock({ input: { draft } }), 'dshadv_action', '导出提示词');
+    assert.equal(exportBtn2.props.disabled, true, '未选方向时导出按钮应禁用');
+    exportBtn2.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(fetchCalls.length, beforeExport, '未选方向时不应发请求');
+    const hintTree = flatText(advDock({ input: { draft } }));
+    assert.ok(
+      hintTree.includes('先点选一个方向') || hintTree.includes('先在上方点选一个方向'),
+      `未选方向时应有引导文案，实际：${hintTree.slice(0, 240)}`,
+    );
+    // 恢复选中供后续导出使用
+    findByClass(advDock({ input: { draft } }), 'dshadv_dir').props.onClick();
+  }
+
   // 复查
   await findByClass(advDock({ input: { draft } }), 'dshadv_action', '复查').props.onClick();
   await new Promise((resolve) => setTimeout(resolve, 0));
