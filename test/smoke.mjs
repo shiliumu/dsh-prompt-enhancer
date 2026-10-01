@@ -124,14 +124,31 @@ const ctx = {
 
 plugin.apply(ctx);
 
-assert.equal(registrations.length, 2, '应该注册两个插槽');
+assert.equal(registrations.length, 4, 'v0.2 改写与 v0.3 参谋各注册两个插槽');
 assert.deepEqual(
-  registrations.map((item) => item.name),
-  ['conversation.input.right', 'conversation.input.dock'],
+  [...registrations].map((item) => item.name).sort(),
+  ['conversation.input.dock', 'conversation.input.dock', 'conversation.input.right', 'conversation.input.right'],
+);
+assert.deepEqual(
+  [...new Set(registrations.map((item) => item.entry.options.id))].sort(),
+  ['advisor-engine', 'prompt-enhancer'],
+  '四个注册必须分属两个插件 id，避免同 id 冲突',
 );
 
-const button = registrations[0].entry.Component;
-const panel = registrations[1].entry.Component;
+/** 按 id + 插槽名取组件，不依赖注册先后顺序。 */
+const pick = (id, slot) => {
+  const found = registrations.find((item) => item.entry.options.id === id && item.name === slot);
+  if (found === undefined) throw new Error(`找不到注册：${id} @ ${slot}`);
+  return found.entry.Component;
+};
+const pickFrom = (list, id, slot) => {
+  const found = list.find((item) => item.entry.options.id === id && item.name === slot);
+  if (found === undefined) throw new Error(`找不到注册：${id} @ ${slot}`);
+  return found.entry.Component;
+};
+
+const button = pick('prompt-enhancer', 'conversation.input.right');
+const panel = pick('prompt-enhancer', 'conversation.input.dock');
 
 /* ---------------- 场景 1：空草稿 -> 报错 ---------------- */
 const draftWrites = [];
@@ -172,11 +189,17 @@ assert.ok(rendered.includes('候选一') && rendered.includes('候选三'), '候
 assert.ok(keydownListeners.length > 0, '候选框打开时应挂上键盘监听');
 
 /* ---------------- 场景 2b：候选框里切换模型 ---------------- */
-const findByClass = (node, className) => {
+const flatText = (n) => (Array.isArray(n) ? n.map(flatText).join('') : (n && typeof n === 'object' ? flatText(n.children ?? null) : String(n ?? '')));
+const findByClass = (node, className, text) => {
   if (node === null || typeof node !== 'object') return null;
-  if (typeof node.props?.className === 'string' && node.props.className.split(' ').includes(className)) return node;
+  const classes = typeof node.props?.className === 'string' ? node.props.className.split(' ') : [];
+  if (classes.includes(className)) {
+    // 带文字筛选时必须真的匹配，避免"取到第一个同名元素却以为是它"这类静默错位。
+    if (text === undefined) return node;
+    if (flatText(node.children ?? null).includes(text)) return node;
+  }
   for (const child of node.children ?? []) {
-    const hit = findByClass(child, className);
+    const hit = findByClass(child, className, text);
     if (hit !== null) return hit;
   }
   return null;
@@ -247,8 +270,8 @@ freshPlugin.apply({
     register: (options, Component) => ({ options, Component }),
   },
 });
-const freshButton = freshRegistrations[0].entry.Component;
-const freshPanel = freshRegistrations[1].entry.Component;
+const freshButton = pickFrom(freshRegistrations, 'prompt-enhancer', 'conversation.input.right');
+const freshPanel = pickFrom(freshRegistrations, 'prompt-enhancer', 'conversation.input.dock');
 draft = '写个周报';
 await freshButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's2' }).props.onClick();
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -302,8 +325,8 @@ failPlugin.apply({
     register: (options, Component) => ({ options, Component }),
   },
 });
-const failButton = failRegistrations[0].entry.Component;
-const failPanel = failRegistrations[1].entry.Component;
+const failButton = pickFrom(failRegistrations, 'prompt-enhancer', 'conversation.input.right');
+const failPanel = pickFrom(failRegistrations, 'prompt-enhancer', 'conversation.input.dock');
 draft = '帮我看看这个爬虫为啥老是断';
 const callsBeforeFail = fetchCalls.length;
 await failButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's3' }).props.onClick();
@@ -379,8 +402,8 @@ gapPlugin.apply({
     register: (options, Component) => ({ options, Component }),
   },
 });
-const gapButton = gapRegistrations[0].entry.Component;
-const gapPanel = gapRegistrations[1].entry.Component;
+const gapButton = pickFrom(gapRegistrations, 'prompt-enhancer', 'conversation.input.right');
+const gapPanel = pickFrom(gapRegistrations, 'prompt-enhancer', 'conversation.input.dock');
 draft = '爬虫老是断';
 await gapButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's3' }).props.onClick();
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -439,6 +462,142 @@ const adopted = draftWrites[draftWrites.length - 1];
 assert.ok(adopted.includes('连续运行 2 小时 分钟不再中断'), `占位符应被原地替换，实际：${adopted}`);
 assert.ok(adopted.includes('【补充要求】'), '无占位符的方向应追加为补充要求');
 assert.ok(adopted.includes('定位根因后直接给出并应用修复'), '补充要求应含所选方向');
+
+/* ---------------- 场景 9：v0.3 参谋（局势模型 → 树 → 导出 → 采纳） ---------------- */
+{
+  unmountAll();
+  keydownListeners.length = 0;
+  ctx.remote.session.modelCatalog = async () => ({
+    ok: true,
+    value: {
+      default: { provider: 'custom:tr', model: 'deepseek-v4-flash-0731' },
+      groups: [{
+        id: 'custom:tr',
+        name: 'TokenRhythm',
+        models: [
+          { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash' },
+          { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' },
+        ],
+      }],
+    },
+  });
+
+  /** 一份"信息不足、暂不推荐"的局势模型：设计里最关键的输出形态。 */
+  const situation = {
+    intent: { primary: '决定是否辞职做独立开发', secondary: ['想验证产品能否养活自己'], success_criteria: [], confidence: 'medium' },
+    situation: {
+      facts: ['五年后端经验', '房贷在还'],
+      inferences: ['当前工作可能不是最优解'],
+      assumptions: ['存款可支撑 12 个月'],
+      constraints: ['不能立刻断收入'],
+      unknowns: ['更重视速度还是质量'],
+      actors: [],
+      time_horizon: '12 个月',
+    },
+    key_tensions: ['稳定收入 vs 创业自由'],
+    decision_variables: ['现金流'],
+    directions: [
+      { id: 'A', name: '全职独立开发', thesis: 'All in 做产品', premises: ['存款够 12 个月'], advantages: ['时间完整'], costs: ['收入归零'], risks: ['产品无人用'], resource_demand: '高', reversibility: 'low', information_gain: 'high', first_action: '先做 30 天付费验证', continue_signals: [], pivot_signals: [], stop_conditions: [] },
+      { id: 'B', name: '边工作边开发', thesis: '用业余时间验证', premises: ['精力允许'], advantages: ['风险低'], costs: ['进度慢'], risks: ['拖太久'], resource_demand: '中', reversibility: 'high', information_gain: 'medium', first_action: '每周固定 10 小时', continue_signals: [], pivot_signals: [], stop_conditions: [] },
+    ],
+    recommendation: { direction_id: 'B', reasoning: ['可逆且信息增益足够'], confidence: 'medium', why_not_others: ['A 的不可逆代价过高'] },
+    questions: [{ question: '月支出占收入多少', why_it_matters: '决定现金跑道', could_change_direction: true }],
+    tree: {
+      type: 'goal', label: '我要不要辞职去做独立开发', source: 'user', confidence: 'high', impact: 'high', status: 'open',
+      children: [
+        { type: 'fact', label: '五年后端经验', source: 'user', confidence: 'high', impact: 'medium', status: 'open', children: [] },
+        { type: 'inference', label: '当前工作可能不是最优解', source: 'model', confidence: 'low', impact: 'medium', status: 'open', children: [] },
+        { type: 'unknown', label: '更重视速度还是质量', source: 'unconfirmed', confidence: 'low', impact: 'high', status: 'open', children: [] },
+        { type: 'fact', label: '已被否定的旧判断', source: 'model', confidence: 'low', impact: 'low', status: 'rejected', children: [] },
+      ],
+    },
+  };
+
+  // 按路由分流的桩：参谋 / 复查 / 导出各有各的响应
+  globalThis.fetch = async (url, init) => {
+    fetchCalls.push({ url, init, body: JSON.parse(init.body) });
+    if (url === '/prompt-enhancer/advisor') return { ok: true, status: 200, json: async () => ({ situation, structured: true, mode: 'decision', resumed: false }) };
+    if (url === '/prompt-enhancer/review') return { ok: true, status: 200, json: async () => ({ review: { valid: false, errors: ['把推断当事实'], warnings: [], missing_questions: ['速度还是质量'], recommended_corrections: ['补前提'] } }) };
+    if (url === '/prompt-enhancer/enhance') return { ok: true, status: 200, json: async () => ({ candidates: [{ text: '导出的可执行提示词正文', gaps: [] }] }) };
+    return { ok: false, status: 404, json: async () => ({ error: 'unexpected route' }) };
+  };
+
+  const advPlugin = loaded.factory((name) => (name === 'react' ? ReactStub : null));
+  const advRegistrations = [];
+  advPlugin.apply({
+    ...ctx,
+    slots: {
+      inject: (name, callback) => {
+        advRegistrations.push({ name, entry: callback() });
+        return () => {};
+      },
+      register: (options, Component) => ({ options, Component }),
+    },
+  });
+  const advButton = pickFrom(advRegistrations, 'advisor-engine', 'conversation.input.right');
+  const advDock = pickFrom(advRegistrations, 'advisor-engine', 'conversation.input.dock');
+
+  draft = '我要不要辞职去做独立开发';
+  const advCallsBefore = fetchCalls.length;
+  await advButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's-adv' }).props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(fetchCalls.length, advCallsBefore + 1, '参谋按钮应发一次分析请求');
+  const advCall = fetchCalls[fetchCalls.length - 1];
+  assert.equal(advCall.url, '/prompt-enhancer/advisor', '参谋按钮应打参谋端点');
+  assert.equal(advCall.body.text, draft);
+  assert.equal(advCall.body.resume, false, '首次分析不是续研');
+  assert.equal(advCall.body.sessionId, 's-adv');
+  assert.ok(!('mode' in advCall.body), 'auto 模式不应显式传 mode');
+
+  let advTree = flatText(advDock({ input: { draft } }));
+  for (const needle of [
+    '决定是否辞职做独立开发', '关键矛盾', '稳定收入 vs 创业自由',
+    '事实·五年后端经验', '推断·当前工作可能不是最优解', '未知·更重视速度还是质量',
+    '全职独立开发', '边工作边开发', '待确认（1', '月支出占收入多少',
+    '我要不要辞职去做独立开发', '五年后端经验', '缩进树（5 节点',
+    '依据：可逆且信息增益足够', '不选其它：A 的不可逆代价过高',
+  ]) {
+    assert.ok(advTree.includes(needle), `参谋界面应渲染「${needle}」。实际：${advTree.slice(0, 300)}`);
+  }
+  // 推荐星标来自 CSS content，文本树看不到，因此断言属性
+  assert.equal(findByClass(advDock({ input: { draft } }), 'dshadv_dir', '边工作边开发').props['data-rec'], 'true');
+  assert.equal(findByClass(advDock({ input: { draft } }), 'dshadv_dir', '全职独立开发').props['data-rec'], 'false');
+  // 节点五属性：状态/来源/置信度徽标 + 已否决节点视觉降级
+  assert.ok(advTree.includes('已否决') && advTree.includes('模型推断') && advTree.includes('置信低'));
+  assert.equal(findByClass(advDock({ input: { draft } }), 'dshadv_row', '已被否定的旧判断').props['data-dead'], 'true');
+
+  // 选中方向 A -> 展开前提/收益/代价/风险
+  await findByClass(advDock({ input: { draft } }), 'dshadv_dir').props.onClick();
+  advTree = flatText(advDock({ input: { draft } }));
+  assert.ok(advTree.includes('策略：All in 做产品'), '选中后应展开方向详情');
+  assert.ok(advTree.includes('前提：存款够 12 个月') && advTree.includes('风险：产品无人用'));
+
+  // 复查
+  await findByClass(advDock({ input: { draft } }), 'dshadv_action', '复查').props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  advTree = flatText(advDock({ input: { draft } }));
+  assert.ok(advTree.includes('审查发现问题') && advTree.includes('把推断当事实') && advTree.includes('建议补问：速度还是质量'));
+
+  // 导出 -> 走 /enhance
+  const exportBtn = findByClass(advDock({ input: { draft } }), 'dshadv_action', '导出提示词');
+  assert.notEqual(exportBtn.props.disabled, true, '已选中方向时导出按钮不应禁用');
+  const callsBeforeExport = fetchCalls.length;
+  await exportBtn.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls.length, callsBeforeExport + 1, '导出应新增一次请求');
+  const exportCall = fetchCalls[fetchCalls.length - 1];
+  assert.equal(exportCall.url, '/prompt-enhancer/enhance', '导出应复用改写端点');
+  assert.ok(exportCall.body.text.includes('All in 做产品'), '导出草稿应带上所选方向的策略');
+  assert.ok(flatText(advDock({ input: { draft } })).includes('导出的可执行提示词正文'));
+
+  // 采纳 -> 写回输入框并关闭面板
+  const writesBefore = draftWrites.length;
+  findByClass(advDock({ input: { draft } }), 'dshadv_action', '采纳提示词').props.onClick();
+  assert.equal(draftWrites.length, writesBefore + 1, '采纳应写入一次草稿');
+  assert.equal(draftWrites[draftWrites.length - 1], '导出的可执行提示词正文');
+  assert.equal(advDock({ input: { draft } }), null, '采纳后参谋面板应关闭');
+}
 
 console.log('smoke ok');
 console.log('  插槽注册      :', registrations.map((item) => item.name).join(', '));
