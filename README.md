@@ -156,29 +156,41 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | `test/verify-manifests.mjs` | 安全校验：profile 的 package.json / cordis.patch.yml 能被真实解析器解析 |
 | `test/probe-pipe.mjs` / `asar-grep.mjs` | 排查工具：命名管道探测、asar 内按字节搜代码 |
 
-Host 侧依赖 `@deepseek-ai/dsh-llm` 的 `BlockAssembler` / `createUserMessage`，通过
-`node_modules\@deepseek-ai\dsh-llm` junction 解析（install 脚本会校验）。
+Host 侧自带消息构造（`buildUserMessage`），直接消费 `llm.stream()` 的分片（正文走 `text-delta`，
+思维链走 `reasoning-delta` 仅做统计，结束原因来自 `finish` 分片），**不依赖** `@deepseek-ai/dsh-llm`
+——在 link 安装与多 profile 场景下更稳。输出额度不硬编（`maxTokens` 交由宿主默认），
+空正文且 `finish=max-tokens` 时自动用更大额度重试一次。
 
 ## 请求契约
+
+### 提示词增强
 
 ```http
 POST /prompt-enhancer/enhance
 { "text": "草稿", "provider": "tokenrhythm", "model": "deepseek-v4-flash-0731",
   "sessionId": "…", "count": 3, "direction": "可选：重写角度" }
-→ 200 {
-    "structured": true,
-    "candidates": [
-      { "text": "提示词正文…",
-        "gaps": [
-          { "question": "这次要动代码吗？",
-            "options": [
-              { "label": "只诊断", "fill": "只做根因定位，暂不修改任何代码",
-                "effect": "最快、零风险；可能多来一轮", "placeholder": "" }
-            ] } ] }
-    ],
+→ 200 { "structured": true,
+    "candidates": [ { "text": "提示词正文…",
+        "gaps": [ { "question": "这次要动代码吗？",
+          "options": [ { "label": "只诊断", "fill": "…", "effect": "…", "placeholder": "" } ] } ] } ],
     "provider": "…", "model": "…" }
-→ 400/403/405/500 { "error": "…" }
+→ 400/403/405/500 { "error": "…", "code": "reasoning-only|empty-output", "detail": {…} }
 ```
+
+### 参谋方向引擎（v0.3）
+
+```http
+POST /prompt-enhancer/advisor
+{ "text": "我要不要辞职做独立开发", "provider": "…", "model": "…",
+  "sessionId": "…", "mode": "decision", "resume": true }
+→ 200 { "situation": { intent, situation{facts,inferences,assumptions,constraints,unknowns},
+    key_tensions, directions[{id,name,thesis,premises,…}], recommendation,
+    questions[≤3], tree{五属性节点} },
+    "structured": true, "mode": "…", "resumed": true, "stateSaved": true }
+```
+
+POST /prompt-enhancer/review：手动复查局势模型（审查器提示词）。
+GET  /prompt-enhancer/diag?provider=…&model=…：只读诊断（分片统计 / finish 原因 / 本机限定）。
 
 仅接受本机来源；请求体上限 256 KB，草稿上限 6000 字符，单次调用 90 秒超时。
 
@@ -217,7 +229,8 @@ Host 不要求模型吐 JSON —— flash 级模型经常吐出不合法 JSON（
   在桌面版里通常不会出现；换回同 provider 的模型即可。
 - **候选没有「待定」标记**：说明这次模型没给出待定点（草稿本身已经够清楚），或输出格式跑偏
   —— 后者会让 `structured=false`，此时退化成纯文本候选，功能仍可用。
-- **报 `IMPORT-ERR`**：`install.ps1` 第 3 步会提示，通常是 `node_modules\@deepseek-ai\dsh-llm` junction 缺失。
+- **报 `IMPORT-ERR`**：`install.ps1` 第 4 步会提示。v0.3 起不再依赖 `@deepseek-ai/dsh-llm`，
+  通常是宿主模块加载失败；按提示用与目标 profile 相同的 DSH runtime 重跑自检。
 - **回滚**：`uninstall.ps1`，或把 `cordis.patch.yml.bak-prompt-enhancer` 覆盖回去。
 
 ## 自测
@@ -235,18 +248,24 @@ Host 侧结构化解析（JSON 抽取 / 围栏穿透 / 截断兜底 / 字段裁�
 node .\test\host-parse.mjs
 ```
 
-模块加载自检（模块加载 + `dsh-llm` 解析）：
+模块加载自检（宿主模块可加载即通过，v0.3 起不再校验 `dsh-llm`）：
 
 ```powershell
 node -e "import('./lib/index.js').then(m=>console.log(m.name, typeof m.apply))"
 ```
 
-## 后续（v0.3 待办）
+参谋引擎契约与路由测试：
 
-- 本地模板兜底模式（完全离线、零 token）。
-- 设置页：固定模型、候选数量、是否附加上下文（cwd / @引用 / agent preset）。
-- 生成前 diff 预览、采纳后一键撤销条。
-- 提示词模板收藏库。
+```powershell
+node .\test\advisor.mjs        # 引擎契约
+node .\test\advisor-route.mjs  # 路由（含 stateSaved/resumed 回路）
+```
+
+## 版本
+
+见 [CHANGELOG.md](./CHANGELOG.md)。v0.3.0 起包含参谋方向引擎，设计文档见
+[docs/v0.3-advisor-engine.md](./docs/v0.3-advisor-engine.md)；同行对比见
+[docs/peer-landscape.md](./docs/peer-landscape.md)。
 
 ## 仓库
 
@@ -258,8 +277,8 @@ cd dsh-prompt-enhancer
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-`.gitignore` 排除了 `node_modules/`（里面的 `@deepseek-ai/dsh-llm` 是指向 DSH 安装目录的 junction，
-不该进版本库；`install.ps1` 会在缺失时自动重建）。
+`.gitignore` 排除了 `node_modules/`（v0.3 起插件不依赖 `@deepseek-ai/dsh-llm`，
+旧版本里的 `node_modules\@deepseek-ai\dsh-llm` junction 可删掉）。
 
 仓库里的 commit 身份是本地设置的 `ROG <ROG@local>`（机器上没配全局 git 身份），
 要改成你自己的：

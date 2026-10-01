@@ -589,6 +589,7 @@ assert.ok(adopted.includes('定位根因后直接给出并应用修复'), '补�
   const exportCall = fetchCalls[fetchCalls.length - 1];
   assert.equal(exportCall.url, '/prompt-enhancer/enhance', '导出应复用改写端点');
   assert.ok(exportCall.body.text.includes('All in 做产品'), '导出草稿应带上所选方向的策略');
+  assert.ok(exportCall.body.text.includes('硬约束：不能立刻断收入'), '导出草稿应带上局势约束（D6 回归）');
   assert.ok(flatText(advDock({ input: { draft } })).includes('导出的可执行提示词正文'));
 
   // 采纳 -> 写回输入框并关闭面板
@@ -597,6 +598,111 @@ assert.ok(adopted.includes('定位根因后直接给出并应用修复'), '补�
   assert.equal(draftWrites.length, writesBefore + 1, '采纳应写入一次草稿');
   assert.equal(draftWrites[draftWrites.length - 1], '导出的可执行提示词正文');
   assert.equal(advDock({ input: { draft } }), null, '采纳后参谋面板应关闭');
+}
+
+/* ---------------- 场景 10：参谋态守卫回归（D1 偏好保留 / D2 统一黑名单 / D3 快捷键分层） ---------------- */
+{
+  unmountAll();
+  keydownListeners.length = 0;
+  ctx.remote.session.modelCatalog = async () => ({
+    ok: true,
+    value: {
+      default: { provider: 'custom:tr', model: 'glm-5.3-flash' },
+      groups: [{
+        id: 'custom:tr',
+        name: 'TokenRhythm',
+        models: [
+          { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash' },
+          { id: 'deepseek-flash', name: 'DeepSeek Flash' },
+        ],
+      }],
+    },
+  });
+  // 独立声明一份局势模型：不能跨块引用场景 9 的块级 const（那会 ReferenceError，
+  // 且 requestJson 会把 json() 解析失败静默降级为 null —— 正是本测试要防的静默路径）。
+  const situation = {
+    intent: { primary: '决定是否辞职做独立开发', secondary: ['想验证产品能否养活自己'], success_criteria: [], confidence: 'medium' },
+    situation: {
+      facts: ['五年后端经验', '房贷在还'],
+      inferences: ['当前工作可能不是最优解'],
+      assumptions: ['存款可支撑 12 个月'],
+      constraints: ['不能立刻断收入'],
+      unknowns: ['更重视速度还是质量'],
+      actors: [],
+      time_horizon: '12 个月',
+    },
+    key_tensions: ['稳定收入 vs 创业自由'],
+    decision_variables: ['现金流'],
+    directions: [
+      { id: 'A', name: '全职独立开发', thesis: 'All in 做产品', premises: ['存款够 12 个月'], advantages: ['时间完整'], costs: ['收入归零'], risks: ['产品无人用'], resource_demand: '高', reversibility: 'low', information_gain: 'high', first_action: '先做 30 天付费验证', continue_signals: [], pivot_signals: [], stop_conditions: [] },
+      { id: 'B', name: '边工作边开发', thesis: '用业余时间验证', premises: ['精力允许'], advantages: ['风险低'], costs: ['进度慢'], risks: ['拖太久'], resource_demand: '中', reversibility: 'high', information_gain: 'medium', first_action: '每周固定 10 小时', continue_signals: [], pivot_signals: [], stop_conditions: [] },
+    ],
+    recommendation: { direction_id: 'B', reasoning: ['可逆且信息增益足够'], confidence: 'medium', why_not_others: ['A 的不可逆代价过高'] },
+    questions: [{ question: '月支出占收入多少', why_it_matters: '决定现金跑道', could_change_direction: true }],
+    tree: {
+      type: 'goal', label: '我要不要辞职去做独立开发', source: 'user', confidence: 'high', impact: 'high', status: 'open',
+      children: [
+        { type: 'fact', label: '五年后端经验', source: 'user', confidence: 'high', impact: 'medium', status: 'open', children: [] },
+        { type: 'inference', label: '当前工作可能不是最优解', source: 'model', confidence: 'low', impact: 'medium', status: 'open', children: [] },
+      ],
+    },
+  };
+  globalThis.fetch = async (url, init) => {
+    fetchCalls.push({ url, init, body: JSON.parse(init.body) });
+    if (url === '/prompt-enhancer/advisor') return { ok: true, status: 200, json: async () => ({ situation, structured: true, mode: 'decision', resumed: false }) };
+    if (url === '/prompt-enhancer/enhance') return { ok: true, status: 200, json: async () => ({ candidates: [{ text: '改写候选', gaps: [] }] }) };
+    return { ok: false, status: 404, json: async () => ({ error: 'unexpected route' }) };
+  };
+
+  const guardPlugin = loaded.factory((name) => (name === 'react' ? ReactStub : null));
+  const guardRegistrations = [];
+  guardPlugin.apply({
+    ...ctx,
+    slots: {
+      inject: (name, callback) => {
+        guardRegistrations.push({ name, entry: callback() });
+        return () => {};
+      },
+      register: (options, Component) => ({ options, Component }),
+    },
+  });
+  const guardAdvButton = pickFrom(guardRegistrations, 'advisor-engine', 'conversation.input.right');
+  const guardAdvDock = pickFrom(guardRegistrations, 'advisor-engine', 'conversation.input.dock');
+  const guardRewriteButton = pickFrom(guardRegistrations, 'prompt-enhancer', 'conversation.input.right');
+
+  // D2：统一黑名单 —— glm-5.3 被参谋过滤，自动选中 deepseek-flash
+  draft = '要不要辞职做独立开发';
+  const beforeD2 = fetchCalls.length;
+  await guardAdvButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's-guard' }).props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls.length, beforeD2 + 1, '应发起一次参谋分析');
+  assert.equal(fetchCalls[fetchCalls.length - 1].body.model, 'deepseek-flash', 'glm-5.3 应被参谋过滤，改用 deepseek-flash');
+
+  // D1：用户选好「决策」模式后，改写流程的 reset 不得把它清回 auto；同时参谋面板应被收起
+  const modeBtn = findByClass(guardAdvDock({ input: { draft } }), 'dshadv_mode', '决策');
+  modeBtn.props.onClick();
+  await guardRewriteButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's-guard' }).props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // 改写 ready 后按 Esc -> 触发改写 reset()（D1 的触发点）
+  const escEvent = { key: 'Escape', preventDefault: () => {}, stopPropagation: () => {} };
+  for (const listener of [...keydownListeners]) listener(escEvent);
+  assert.equal(guardAdvDock({ input: { draft } }), null, '改写 reset 后参谋面板应被收起');
+  // 再开参谋：模式条上「决策」应仍处激活态
+  await guardAdvButton({ useInput: (selector) => selector({ draft }), inputActions, sessionId: 's-guard' }).props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const decisionBtn = findByClass(guardAdvDock({ input: { draft } }), 'dshadv_mode', '决策');
+  assert.equal(decisionBtn.props['data-active'], 'true', '参谋模式是用户偏好，reset 不得清掉（D1 回归）');
+
+  // D3：picker 态按 Ctrl+Shift+J 应退回候选层而不是直接关闭
+  const callsBeforeSwitch = fetchCalls.length;
+  findByClass(guardAdvDock({ input: { draft } }), 'dshadv_close', '换模型').props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const jEvent = { key: 'J', ctrlKey: true, shiftKey: true, preventDefault: () => {}, stopPropagation: () => {} };
+  for (const listener of [...keydownListeners]) listener(jEvent);
+  const afterJ = guardAdvDock({ input: { draft } });
+  assert.ok(afterJ !== null, 'picker 态按快捷键应退回候选层，而不是整个关闭');
+  assert.ok(flatText(afterJ).includes('战略方向'), '退回后应回到参谋候选视图');
+  assert.equal(fetchCalls.length, callsBeforeSwitch, '退回过程中不应发起新请求');
 }
 
 console.log('smoke ok');

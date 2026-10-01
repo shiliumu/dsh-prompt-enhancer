@@ -1,7 +1,7 @@
 {
   "name": "@linxin666/dsh-prompt-enhancer",
-  "version": "0.2.1",
-  "description": "DSH Web UI 提示词增强器：输入框工具行 ✨ 按钮一键生成清晰提示词；候选框支持方向键/数字键、生成后切换模型，并把「该由你拍板」的点做成方向选项框 + 效果方向缩进树；Host 侧用本地已配置的 flash 模型改写。",
+  "version": "0.3.0",
+  "description": "DSH Web UI 双引擎：✨ 提示词增强器（草稿改写 + 方向选项）与 🧭 参谋方向引擎（一句话想法 → 可审查/可比较/可迭代的局势模型 + 缩进树视图 + 选定方向导出提示词）。Host 侧用本地已配置的模型，支持续研增量更新与手动复查。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
